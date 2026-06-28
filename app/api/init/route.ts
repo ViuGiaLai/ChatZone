@@ -1,35 +1,10 @@
+export const runtime = "nodejs";
 import { NextResponse } from "next/server"
 import { ensureAdminExists } from "@/lib/auth"
-import { checkRedisConnection, redisStatus } from "@/lib/redis"
 
 export async function GET() {
   try {
-    // Check if Redis is configured
-    if (!redisStatus.isConfigured) {
-      return NextResponse.json(
-        {
-          success: false,
-          message: "Redis is not configured. Please set up the environment variables.",
-          status: "not_configured",
-        },
-        { status: 200 },
-      )
-    }
-
-    // Check Redis connection
-    const isConnected = await checkRedisConnection()
-    if (!isConnected) {
-      return NextResponse.json(
-        {
-          success: false,
-          message: "Could not connect to Redis. Please check your configuration.",
-          status: "connection_failed",
-        },
-        { status: 200 },
-      )
-    }
-
-    // Try to create admin user
+    // Ensure admin user exists (no-op if already configured)
     await ensureAdminExists()
 
     return NextResponse.json({

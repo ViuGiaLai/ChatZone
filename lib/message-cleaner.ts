@@ -1,17 +1,33 @@
-import { redis } from "@/lib/redis";
+import { supabase } from "@/lib/db";
 
 export async function deleteExpiredMessages() {
   const oneWeekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
 
-  const oldMessages = await redis.zrangebyscore("messages-index", {
-    min: 0,
-    max: oneWeekAgo,
-  });
+  const { data: oldMessages, error } = await supabase
+    .from('messages')
+    .select('id')
+    .lt('timestamp', oneWeekAgo);
 
-  for (const key of oldMessages) {
-    await redis.del(key); // Xoá tin nhắn
-    await redis.zrem("messages-index", key); // Xoá khỏi sorted set
+  if (error) {
+    console.error('Error fetching old messages:', error);
+    return;
   }
 
-  console.log(`🧹 Đã xoá ${oldMessages.length} tin nhắn cũ hơn 1 tuần`);
+  if (!oldMessages || oldMessages.length === 0) {
+    console.log('No expired messages to clean up.');
+    return;
+  }
+
+  const ids = oldMessages.map(m => m.id);
+  const { error: deleteError } = await supabase
+    .from('messages')
+    .delete()
+    .in('id', ids);
+
+  if (deleteError) {
+    console.error('Error deleting old messages:', deleteError);
+    return;
+  }
+
+  console.log(`Đã xoá ${ids.length} tin nhắn cũ hơn 1 tuần`);
 }

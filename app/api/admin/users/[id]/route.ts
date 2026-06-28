@@ -1,131 +1,115 @@
+export const runtime = "nodejs";
+
 import { NextResponse } from "next/server"
 import { getCurrentUser } from "@/lib/auth"
-import { redis } from "@/lib/redis"
-import { hashPassword } from "@/lib/auth"
-import type { User } from "@/lib/auth"
+import { supabase } from "@/lib/db"
+import { createClient as createSupabaseClient } from '@supabase/supabase-js'
 
-export async function PUT(request: Request, { params }: { params: { id: string } }) {
+export async function PUT(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
-    const user = await getCurrentUser()
-    if (!user || user.role !== "admin") {
+    const admin = await getCurrentUser()
+    if (!admin || admin.role !== "admin") {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     }
 
-    const userId = params.id
+    const { id: userId } = await params
     const { username, password, role } = await request.json()
 
     if (!username) {
       return NextResponse.json({ error: "Username is required" }, { status: 400 })
     }
 
-    // Get all users
-    const usersData = await redis.hgetall("users")
-    if (!usersData) {
-      return NextResponse.json({ error: "No users found" }, { status: 404 })
+    const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
+    if (!serviceKey || !supabaseUrl) {
+      return NextResponse.json({ error: "Server configuration error" }, { status: 500 })
     }
 
-    // Find the user to update
-    let userToUpdate: User | null = null
-    let currentUsername: string | null = null
+    const supabaseAdmin = createSupabaseClient(supabaseUrl, serviceKey, {
+      auth: { autoRefreshToken: false, persistSession: false },
+    })
 
-    for (const [uname, userData] of Object.entries(usersData)) {
-      try {
-        const user = typeof userData === "string" ? JSON.parse(userData) : userData
-        if (user.id === userId) {
-          userToUpdate = user
-          currentUsername = uname
-          break
-        }
-      } catch (error) {
-        console.error("Error parsing user data:", error)
-      }
+    // Check if new username already exists (excluding current user)
+    const { data: existingProfile } = await supabaseAdmin
+      .from('profiles')
+      .select('user_id')
+      .eq('username', username)
+      .neq('user_id', userId)
+      .maybeSingle()
+
+    if (existingProfile) {
+      return NextResponse.json({ error: "Username already exists" }, { status: 400 })
     }
 
-    if (!userToUpdate || !currentUsername) {
-      return NextResponse.json({ error: "User not found" }, { status: 404 })
+    // Update profile
+    const updates: Record<string, any> = { username }
+    if (role) updates.role = role
+
+    const { error: updateError } = await supabaseAdmin
+      .from('profiles')
+      .update(updates)
+      .eq('user_id', userId)
+
+    if (updateError) {
+      console.error('Error updating profile:', updateError)
+      return NextResponse.json({ error: "Failed to update user" }, { status: 500 })
     }
 
-    // Check if new username already exists (if it's different from current)
-    if (username !== currentUsername) {
-      const existingUser = await redis.hget("users", username)
-      if (existingUser) {
-        return NextResponse.json({ error: "Username already exists" }, { status: 400 })
-      }
-    }
-
-    // Update user data
-    const updatedUser: User = {
-      ...userToUpdate,
-      username,
-      role: role || userToUpdate.role || "user",
-    }
-
-    // Update password if provided
+    // Update password if provided (via Auth admin API)
     if (password) {
-      updatedUser.password = hashPassword(password)
+      const { error: passwordError } = await supabaseAdmin.auth.admin.updateUserById(userId, {
+        password,
+      })
+      if (passwordError) {
+        console.error('Error updating password:', passwordError)
+      }
     }
 
-    // If username is being changed, delete the old entry and create a new one
-    if (username !== currentUsername) {
-      await redis.hdel("users", currentUsername)
-    }
+    const { data: updated } = await supabaseAdmin
+      .from('profiles')
+      .select('user_id, username, role, avatar_url, profile_color')
+      .eq('user_id', userId)
+      .single()
 
-    // Store updated user
-    await redis.hset("users", { [username]: JSON.stringify(updatedUser) })
-
-    // Don't return password
-    const { password: _, ...userWithoutPassword } = updatedUser
-
-    return NextResponse.json(userWithoutPassword)
+    return NextResponse.json(updated ? { ...updated, id: updated.user_id } : { id: userId, username, role })
   } catch (error) {
     console.error("Error updating user:", error)
     return NextResponse.json({ error: "Internal server error" }, { status: 500 })
   }
 }
 
-export async function DELETE(request: Request, { params }: { params: { id: string } }) {
+export async function DELETE(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
-    const user = await getCurrentUser()
-    if (!user || user.role !== "admin") {
+    const admin = await getCurrentUser()
+    if (!admin || admin.role !== "admin") {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     }
 
-    const userId = params.id
+    const { id: userId } = await params
 
-    // Don't allow deleting the current user
-    if (userId === user.id) {
+    if (userId === admin.id) {
       return NextResponse.json({ error: "Cannot delete your own account" }, { status: 400 })
     }
 
-    // Get all users
-    const usersData = await redis.hgetall("users")
-    if (!usersData) {
-      return NextResponse.json({ error: "No users found" }, { status: 404 })
+    const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
+    if (!serviceKey || !supabaseUrl) {
+      return NextResponse.json({ error: "Server configuration error" }, { status: 500 })
     }
 
-    // Find the user to delete
-    let usernameToDelete: string | null = null
+    const supabaseAdmin = createSupabaseClient(supabaseUrl, serviceKey, {
+      auth: { autoRefreshToken: false, persistSession: false },
+    })
 
-    for (const [username, userData] of Object.entries(usersData)) {
-      try {
-        const user = typeof userData === "string" ? JSON.parse(userData) : userData
-        if (user.id === userId) {
-          usernameToDelete = username
-          break
-        }
-      } catch (error) {
-        console.error("Error parsing user data:", error)
-      }
+    // Delete profile
+    await supabaseAdmin.from('profiles').delete().eq('user_id', userId)
+
+    // Delete user from Auth
+    const { error } = await supabaseAdmin.auth.admin.deleteUser(userId)
+    if (error) {
+      console.error('Error deleting auth user:', error)
+      return NextResponse.json({ error: error.message }, { status: 500 })
     }
-
-    if (!usernameToDelete) {
-      return NextResponse.json({ error: "User not found" }, { status: 404 })
-    }
-
-    // Delete user
-    await redis.hdel("users", usernameToDelete)
-
-    // TODO: Delete user's chats, messages, etc.
 
     return NextResponse.json({ success: true })
   } catch (error) {

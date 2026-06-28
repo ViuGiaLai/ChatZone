@@ -1,9 +1,9 @@
-export const runtime = "nodejs";
+export const runtime = "nodejs"
 import { NextResponse } from "next/server"
 import { getCurrentUser } from "@/lib/auth"
-import { updateChatSettings } from "@/lib/chat"
+import { addMembersToChat } from "@/lib/chat"
 
-export async function PUT(request: Request, { params }: { params: Promise<{ id: string }> }) {
+export async function PATCH(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const user = await getCurrentUser()
     if (!user) {
@@ -11,9 +11,13 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
     }
 
     const { id: chatId } = await params
-    const updates = await request.json()
+    const { members } = await request.json()
 
-    const result = await updateChatSettings(chatId, updates, user.id)
+    if (!Array.isArray(members) || members.length === 0) {
+      return NextResponse.json({ error: "Members array is required" }, { status: 400 })
+    }
+
+    const result = await addMembersToChat(chatId, members, user.id)
 
     if (!result.success) {
       return NextResponse.json({ error: result.message }, { status: 400 })
@@ -21,7 +25,7 @@ export async function PUT(request: Request, { params }: { params: Promise<{ id: 
 
     return NextResponse.json(result)
   } catch (error) {
-    console.error("Error updating chat settings:", error)
+    console.error("Error adding members:", error)
     return NextResponse.json({ error: "Internal server error" }, { status: 500 })
   }
 }

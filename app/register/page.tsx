@@ -40,8 +40,10 @@ export default function RegisterPage() {
       <div className="w-full max-w-md">
         <Card className="border-gray-700 bg-gray-800/50 backdrop-blur-sm">
           <CardHeader className="space-y-1 text-center">
-            <CardTitle className="text-2xl font-bold tracking-tight text-white">Create an account</CardTitle>
-            <CardDescription className="text-gray-400">Enter your information to create your account</CardDescription>
+            <CardTitle className="text-2xl font-bold tracking-tight text-white">Đăng ký tài khoản</CardTitle>
+            <CardDescription className="text-gray-400">
+              Nhập thông tin để tạo tài khoản mới
+            </CardDescription>
           </CardHeader>
 
           {error && (
@@ -53,45 +55,58 @@ export default function RegisterPage() {
           )}
 
           <form action={handleSubmit}>
-            <CardContent className="space-y-4 mt-4">
-              <div className="space-y-2">
-                <Label htmlFor="username" className="text-gray-300">
-                  Username
-                </Label>
-                <Input
-                  id="username"
-                  name="username"
-                  placeholder="Choose a username"
-                  required
-                  className="bg-gray-700 border-gray-600 text-white placeholder:text-gray-500"
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="password" className="text-gray-300">
-                  Password
-                </Label>
-                <Input
-                  id="password"
-                  name="password"
-                  type="password"
-                  placeholder="Create a password"
-                  required
-                  className="bg-gray-700 border-gray-600 text-white placeholder:text-gray-500"
-                />
-              </div>
-            </CardContent>
+          <CardContent className="space-y-4 mt-4">
+            <div className="space-y-2">
+              <Label htmlFor="email" className="text-gray-300">
+                Email
+              </Label>
+              <Input
+                id="email"
+                name="email"
+                type="email"
+                placeholder="Nhập email"
+                required
+                className="bg-gray-700 border-gray-600 text-white placeholder:text-gray-500"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="username" className="text-gray-300">
+                Tên đăng nhập
+              </Label>
+              <Input
+                id="username"
+                name="username"
+                placeholder="Chọn tên đăng nhập"
+                required
+                className="bg-gray-700 border-gray-600 text-white placeholder:text-gray-500"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="password" className="text-gray-300">
+                Mật khẩu
+              </Label>
+              <Input
+                id="password"
+                name="password"
+                type="password"
+                placeholder="Tạo mật khẩu"
+                required
+                className="bg-gray-700 border-gray-600 text-white placeholder:text-gray-500"
+              />
+            </div>
+          </CardContent>
             <CardFooter className="flex flex-col space-y-4">
               <Button
                 type="submit"
                 disabled={isLoading}
                 className="w-full bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 text-white"
               >
-                {isLoading ? "Creating Account..." : "Sign Up"}
+                {isLoading ? "Đang tạo tài khoản..." : "Đăng ký"}
               </Button>
               <div className="text-center text-sm text-gray-400">
-                Already have an account?{" "}
+                Đã có tài khoản?{" "}
                 <Link href="/login" className="text-blue-400 hover:text-blue-300 underline underline-offset-4">
-                  Sign in
+                  Đăng nhập
                 </Link>
               </div>
             </CardFooter>

@@ -1,15 +1,16 @@
+export const runtime = "nodejs";
 import { NextResponse } from "next/server"
 import { getCurrentUser } from "@/lib/auth"
 import { editMessage, deleteMessage, markMessageAsRead } from "@/lib/chat"
 
-export async function PUT(request: Request, { params }: { params: { id: string } }) {
+export async function PUT(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const user = await getCurrentUser()
     if (!user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     }
 
-    const messageId = params.id
+    const { id: messageId } = await params
     const { content, chatId } = await request.json()
 
     if (!content || !chatId) {
@@ -29,15 +30,15 @@ export async function PUT(request: Request, { params }: { params: { id: string }
   }
 }
 
-export async function DELETE(request: Request, { params }: { params: { id: string } }) {
+export async function DELETE(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const user = await getCurrentUser()
     if (!user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     }
 
-    const messageId = params.id
-    const { searchParams } = new URL(request.url)
+    const { id: messageId } = await params
+    const { searchParams } = new URL(request.url, process.env.NEXT_PUBLIC_BASE_URL || 'http://localhost:3000')
     const chatId = searchParams.get("chatId")
 
     if (!chatId) {
@@ -57,14 +58,14 @@ export async function DELETE(request: Request, { params }: { params: { id: strin
   }
 }
 
-export async function PATCH(request: Request, { params }: { params: { id: string } }) {
+export async function PATCH(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const user = await getCurrentUser()
     if (!user) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     }
 
-    const messageId = params.id
+    const { id: messageId } = await params
     const { chatId } = await request.json()
 
     if (!chatId) {

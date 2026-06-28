@@ -1,5 +1,5 @@
-import { redis } from "./redis"
-import { generateId } from "./auth"
+import { supabase } from './db'
+import type { RealtimeChannel } from '@supabase/supabase-js'
 
 // Message type definition
 export type Message = {
@@ -15,6 +15,7 @@ export type Message = {
   fileName?: string
   fileType?: string
   readBy?: string[]
+  reactions?: Record<string, string[]>
 }
 
 // Chat type definition
@@ -30,7 +31,431 @@ export type Chat = {
   icon?: string
 }
 
-// Notification type definition
+// Typing indicator types
+export type TypingUser = {
+  userId: string
+  username: string
+  chatId: string
+  timestamp: number
+}
+
+const typingChannels = new Map<string, RealtimeChannel>()
+
+export function broadcastTyping(chatId: string, userId: string, username: string) {
+  const channel = supabase.channel(`typing:${chatId}`)
+  channel.subscribe(async (status) => {
+    if (status !== 'SUBSCRIBED') return
+    await channel.send({
+      type: 'broadcast',
+      event: 'typing',
+      payload: { userId, username, chatId, timestamp: Date.now() },
+    })
+    setTimeout(() => supabase.removeChannel(channel), 1000)
+  })
+}
+
+export function subscribeToTyping(
+  chatId: string,
+  userId: string,
+  onTyping: (user: TypingUser) => void,
+  onStopTyping: (userId: string) => void
+) {
+  const key = `typing:${chatId}`
+  if (typingChannels.has(key)) {
+    supabase.removeChannel(typingChannels.get(key)!)
+  }
+
+  const channel = supabase.channel(key)
+  channel
+    .on('broadcast', { event: 'typing' }, (payload) => {
+      const data = payload.payload as TypingUser
+      if (data.userId !== userId) {
+        onTyping(data)
+      }
+    })
+    .subscribe()
+
+  typingChannels.set(key, channel)
+
+  return () => {
+    supabase.removeChannel(channel)
+    typingChannels.delete(key)
+  }
+}
+
+// Get unread message count per chat
+export async function getUnreadCounts(userId: string): Promise<Record<string, number>> {
+  try {
+    const { data, error } = await supabase
+      .from('messages')
+      .select('chatId, senderId, readBy')
+
+    if (error) {
+      console.error('Error fetching unread counts:', error)
+      return {}
+    }
+
+    const counts: Record<string, number> = {}
+    for (const msg of data || []) {
+      const m = msg as any
+      if (m.senderId === userId) continue
+      const readBy: string[] = m.readBy || []
+      if (!readBy.includes(userId)) {
+        counts[m.chatId] = (counts[m.chatId] || 0) + 1
+      }
+    }
+    return counts
+  } catch (error) {
+    console.error('Error in getUnreadCounts:', error)
+    return {}
+  }
+}
+
+// Get user chats
+export async function getUserChats(userId: string): Promise<Chat[]> {
+  try {
+    const { data, error } = await supabase
+      .from("chats")
+      .select("*")
+      .filter('members', 'cs', `["${userId}"]`)
+
+    if (error) {
+      if ((error as any).code === "PGRST205") {
+        console.warn("Supabase: bảng `chats` chưa tồn tại.")
+        return []
+      }
+      console.error("Error fetching chats:", error)
+      return []
+    }
+
+    // Build initial chat list
+    const chatIdsWithoutLast: string[] = []
+    const chats: Chat[] = (data || []).map((item: any) => {
+      const hasLast = !!item.last_message
+      if (!hasLast) chatIdsWithoutLast.push(item.id)
+      return {
+        id: item.id,
+        name: item.name,
+        isGroup: item.is_group,
+        createdBy: item.created_by,
+        members: item.members || [],
+        createdAt: item.created_at ? new Date(item.created_at).getTime() : Date.now(),
+        lastMessage: hasLast ? {
+          id: item.last_message.id,
+          content: item.last_message.content,
+          senderId: item.last_message.senderId || item.last_message.sender_id,
+          senderName: item.last_message.senderName || item.last_message.sender_name,
+          chatId: item.last_message.chatId || item.last_message.chat_id,
+          timestamp: item.last_message.timestamp,
+          edited: item.last_message.edited,
+          deleted: item.last_message.deleted,
+          fileUrl: item.last_message.fileUrl || item.last_message.file_url,
+          fileName: item.last_message.fileName || item.last_message.file_name,
+          readBy: item.last_message.readBy || item.last_message.read_by,
+        } : undefined,
+        theme: item.theme,
+        icon: item.icon,
+      }
+    })
+
+    // Fallback: fetch latest message for chats without last_message
+    if (chatIdsWithoutLast.length > 0) {
+      for (const chatId of chatIdsWithoutLast) {
+        const { data: msgs } = await supabase
+          .from('messages')
+          .select('*')
+          .eq('chatId', chatId)
+          .order('timestamp', { ascending: false })
+          .limit(1)
+        if (msgs && msgs.length > 0) {
+          const m = msgs[0]
+          const chat = chats.find(c => c.id === chatId)
+          if (chat) {
+            chat.lastMessage = {
+              id: m.id,
+              content: m.content,
+              senderId: m.senderId,
+              senderName: m.senderName,
+              chatId: m.chatId,
+              timestamp: m.timestamp,
+              edited: m.edited,
+              deleted: m.deleted,
+              fileUrl: m.fileUrl,
+              fileName: m.fileName,
+              fileType: m.type,
+              readBy: m.readBy || [],
+              reactions: m.reactions || {},
+            }
+          }
+        }
+      }
+    }
+
+    return chats as Chat[]
+  } catch (error) {
+    console.error("Unexpected error fetching chats:", error)
+    return []
+  }
+}
+
+// Send a message
+export async function sendMessage(
+  content: string,
+  chatId: string,
+  senderId: string,
+  senderName: string,
+  fileUrl?: string,
+  fileName?: string
+): Promise<Message | null> {
+  const message: Omit<Message, 'id' | 'timestamp'> = {
+    content,
+    senderId,
+    senderName,
+    chatId,
+    readBy: [senderId],
+    fileUrl,
+    fileName
+  }
+
+  const { data, error } = await supabase
+    .from('messages')
+    .insert([{ ...message, timestamp: Date.now() }])
+    .select()
+    .single()
+
+  if (error) {
+    console.error('Error sending message:', error)
+    return null
+  }
+
+  // Update last message in chat
+  const { error: updateError } = await supabase
+    .from('chats')
+    .update({ last_message: data })
+    .eq('id', chatId)
+
+  if (updateError) {
+    console.error('Error updating last_message:', updateError)
+  }
+
+  return data
+}
+
+// Get messages for a chat
+export async function getMessages(chatId: string, limit = 50): Promise<Message[]> {
+  const { data, error } = await supabase
+    .from('messages')
+    .select('*')
+    .eq('chatId', chatId)
+    .order('timestamp', { ascending: false })
+    .limit(limit)
+
+  if (error) {
+    console.error('Error fetching messages:', error)
+    return []
+  }
+
+  // Map snake_case DB fields to camelCase Message type if needed
+  const mapped: Message[] = (data || []).map((msg: any) => ({
+    id: msg.id,
+    content: msg.content,
+    senderId: msg.senderId,
+    senderName: msg.senderName,
+    chatId: msg.chatId,
+    timestamp: msg.timestamp,
+    edited: msg.edited,
+    deleted: msg.deleted,
+    fileUrl: msg.fileUrl,
+    fileName: msg.fileName,
+    fileType: msg.type,
+    readBy: msg.readBy || [],
+    reactions: msg.reactions || {},
+  }))
+  // Fetch newest-first, then reverse so oldest is first (top)
+  return mapped.reverse()
+}
+
+// Create a new chat
+export async function createChat(
+  name: string,
+  isGroup: boolean,
+  createdBy: string,
+  members: string[],
+  icon?: string
+): Promise<Chat | null> {
+  try {
+    // Đảm bảo createdBy có trong members
+    const allMembers = Array.from(new Set([...members, createdBy]));
+    
+    const chatData = {
+      name,
+      is_group: isGroup,
+      created_by: createdBy,
+      members: allMembers,
+      icon: icon || null,
+      created_at: new Date().toISOString()
+    };
+
+    console.log('Creating chat with data:', chatData);
+
+    const { data, error } = await supabase
+      .from('chats')
+      .insert(chatData)
+      .select()
+      .single();
+
+    if (error) {
+      console.error('Error creating chat:', error);
+      throw error;
+    }
+
+    console.log('Chat created successfully:', data);
+
+    // Map response về kiểu Chat
+    return {
+      id: data.id,
+      name: data.name,
+      isGroup: data.is_group,
+      createdBy: data.created_by,
+      members: data.members || [],
+      createdAt: data.created_at ? new Date(data.created_at).getTime() : Date.now(),
+      theme: data.theme,
+      icon: data.icon,
+    };
+  } catch (error) {
+    console.error('Error in createChat:', error);
+    return null;
+  }
+}
+
+// Update chat settings
+export async function updateChatSettings(
+  chatId: string,
+  updates: Partial<Chat>,
+  userId: string
+): Promise<{ success: boolean; message?: string }> {
+  const { error } = await supabase
+    .from('chats')
+    .update(updates)
+    .eq('id', chatId)
+
+  if (error) {
+    console.error('Error updating chat:', error)
+    return { success: false, message: error.message }
+  }
+
+  return { success: true }
+}
+
+// Add members to a group chat
+export async function addMembersToChat(
+  chatId: string,
+  newMemberIds: string[],
+  userId: string
+): Promise<{ success: boolean; message?: string }> {
+  try {
+    const { data: chat, error: fetchError } = await supabase
+      .from('chats')
+      .select('members, created_by')
+      .eq('id', chatId)
+      .single()
+
+    if (fetchError || !chat) {
+      return { success: false, message: 'Chat not found' }
+    }
+
+    if (chat.created_by !== userId) {
+      return { success: false, message: 'Only the creator can add members' }
+    }
+
+    const currentMembers: string[] = chat.members || []
+    const updatedMembers = Array.from(new Set([...currentMembers, ...newMemberIds]))
+
+    const { error: updateError } = await supabase
+      .from('chats')
+      .update({ members: updatedMembers })
+      .eq('id', chatId)
+
+    if (updateError) {
+      return { success: false, message: updateError.message }
+    }
+
+    return { success: true }
+  } catch (error) {
+    console.error('Error in addMembersToChat:', error)
+    return { success: false, message: 'Internal server error' }
+  }
+}
+
+// Mark message as read
+export async function markMessageAsRead(
+  messageId: string,
+  chatId: string,
+  userId: string
+): Promise<boolean> {
+  const { data: message, error: fetchError } = await supabase
+    .from('messages')
+    .select('readBy')
+    .eq('id', messageId)
+    .single()
+
+  if (fetchError || !message) {
+    console.error('Error fetching message:', fetchError)
+    return false
+  }
+
+  const readBy = Array.from(new Set([...(message.readBy || []), userId]))
+
+  const { error: updateError } = await supabase
+    .from('messages')
+    .update({ readBy })
+    .eq('id', messageId)
+
+  if (updateError) {
+    console.error('Error updating message:', updateError)
+    return false
+  }
+
+  return true
+}
+
+// Get all users
+export async function getAllUsers(): Promise<Array<{ id: string; username: string; avatar_url?: string; is_online?: boolean; last_seen?: string }>> {
+  const { data, error } = await supabase
+    .from('profiles')
+    .select('user_id, username, avatar_url, is_online, last_seen')
+    .order('username', { ascending: true })
+
+  if (error) {
+    console.error('Error fetching users:', error)
+    return []
+  }
+
+  return (data || []).map(p => ({
+    id: p.user_id,
+    username: p.username,
+    avatar_url: p.avatar_url,
+    is_online: p.is_online,
+    last_seen: p.last_seen,
+  }))
+}
+
+// Update user presence (online/offline status)
+export async function updateUserPresence(userId: string, isOnline: boolean): Promise<boolean> {
+  const { error } = await supabase
+    .from('profiles')
+    .update({ is_online: isOnline, last_seen: new Date().toISOString() })
+    .eq('user_id', userId)
+
+  if (error) {
+    console.error('Error updating user presence:', error)
+    return false
+  }
+
+  return true
+}
+
+// Notification type (phù hợp với NotificationBell component)
 export type Notification = {
   id: string
   userId: string
@@ -42,635 +467,132 @@ export type Notification = {
   read: boolean
 }
 
-// Helper function to safely parse JSON
-function safeJsonParse<T>(data: string | any, fallback: T): T {
-  if (typeof data === "string") {
-    try {
-      return JSON.parse(data) as T
-    } catch (e) {
-      console.error("Error parsing JSON:", e)
-      return fallback
-    }
-  }
-  return data as T
-}
-
-// Send a message
-export async function sendMessage(
-  content: string,
-  chatId: string,
-  senderId: string,
-  senderName: string,
-  fileUrl?: string,
-  fileName?: string,
-  fileType?: string,
-) {
+// Get notifications for a user
+export async function getUserNotifications(userId: string): Promise<Notification[]> {
   try {
-    const messageId = generateId()
+    const { data, error } = await supabase
+      .from("notifications")
+      .select("*")
+      .eq("userId", userId)
+      .order("timestamp", { ascending: false })
 
-    const message: Message = {
-      id: messageId,
-      content,
-      senderId,
-      senderName,
-      chatId,
-      timestamp: Date.now(),
-      readBy: [senderId], // Sender has read the message
-      fileUrl,
-      fileName,
-      fileType,
-    }
-
-    // Store message in Redis
-    await redis.lpush(`chat:${chatId}:messages`, JSON.stringify(message))
-
-    // Update last message in chat
-    const chatData = await redis.get(`chat:${chatId}`)
-    if (chatData) {
-      const chat = safeJsonParse<Chat>(chatData, {
-        id: chatId,
-        name: "",
-        isGroup: false,
-        createdBy: "",
-        members: [],
-        createdAt: Date.now(),
-      })
-
-      chat.lastMessage = message
-      await redis.set(`chat:${chatId}`, JSON.stringify(chat))
-    }
-
-    // Create notifications for all members except sender
-    const chat = safeJsonParse<Chat>(chatData || "", {
-      id: chatId,
-      name: "",
-      isGroup: false,
-      createdBy: "",
-      members: [],
-      createdAt: Date.now(),
-    })
-
-    for (const memberId of chat.members) {
-      if (memberId !== senderId) {
-        const notificationId = generateId()
-        const notification: Notification = {
-          id: notificationId,
-          userId: memberId,
-          chatId,
-          messageId,
-          senderName,
-          content: fileUrl ? `${senderName} sent a file: ${fileName || "File"}` : content,
-          timestamp: Date.now(),
-          read: false,
-        }
-        await redis.lpush(`user:${memberId}:notifications`, JSON.stringify(notification))
-      }
-    }
-
-    // Publish message to Redis channel for real-time updates
-    try {
-      await redis.publish("new_message", JSON.stringify(message))
-    } catch (error) {
-      console.error("Error publishing message:", error)
-      // Continue even if publishing fails
-    }
-
-    return message
-  } catch (error) {
-    console.error("Error sending message:", error)
-    throw error
-  }
-}
-
-// Get messages for a chat
-export async function getMessages(chatId: string, limit = 50) {
-  try {
-    const messagesData = await redis.lrange(`chat:${chatId}:messages`, 0, limit - 1)
-
-    if (!messagesData || !Array.isArray(messagesData)) {
-      console.error("Invalid messages data:", messagesData)
+    if (error) {
+      console.error("Error fetching notifications:", error)
       return []
     }
 
-    return messagesData
-      .map((msg) => {
-        try {
-          // Safely parse message data
-          if (typeof msg === "string") {
-            return JSON.parse(msg) as Message
-          } else {
-            // If it's already an object, use it directly
-            return msg as Message
-          }
-        } catch (error) {
-          console.error("Error parsing message:", error)
-          return {
-            id: "error",
-            content: "Error loading message",
-            senderId: "",
-            senderName: "Unknown",
-            chatId,
-            timestamp: Date.now(),
-          } as Message
-        }
-      })
-      .reverse()
+    return (data as Notification[]) || []
   } catch (error) {
-    console.error("Error getting messages:", error)
+    console.error("Unexpected error fetching notifications:", error)
     return []
   }
 }
 
-// Edit a message
-export async function editMessage(messageId: string, chatId: string, newContent: string, userId: string) {
+// Get unread notification count for a user
+export async function getUnreadNotificationCount(userId: string): Promise<number> {
   try {
-    // Get all messages for the chat
-    const messagesData = await redis.lrange(`chat:${chatId}:messages`, 0, -1)
+    const { count, error } = await supabase
+      .from("notifications")
+      .select("id", { count: "exact", head: true })
+      .eq("userId", userId)
+      .eq("read", false)
 
-    if (!messagesData || !Array.isArray(messagesData)) {
-      return { success: false, message: "Messages not found" }
-    }
-
-    let messageIndex = -1
-    let messageToEdit: Message | null = null
-
-    // Find the message to edit
-    for (let i = 0; i < messagesData.length; i++) {
-      try {
-        const msg = safeJsonParse<Message>(messagesData[i], {} as Message)
-        if (msg.id === messageId) {
-          messageToEdit = msg
-          messageIndex = i
-          break
-        }
-      } catch (error) {
-        console.error("Error parsing message:", error)
-      }
-    }
-
-    if (!messageToEdit || messageIndex === -1) {
-      return { success: false, message: "Message not found" }
-    }
-
-    // Check if the user is the sender of the message
-    if (messageToEdit.senderId !== userId) {
-      return { success: false, message: "You can only edit your own messages" }
-    }
-
-    // Update the message
-    messageToEdit.content = newContent
-    messageToEdit.edited = true
-
-    // Save the updated message
-    await redis.lset(`chat:${chatId}:messages`, messageIndex, JSON.stringify(messageToEdit))
-
-    // Update last message if this was the last message
-    const chatData = await redis.get(`chat:${chatId}`)
-    if (chatData) {
-      const chat = safeJsonParse<Chat>(chatData, {} as Chat)
-      if (chat.lastMessage?.id === messageId) {
-        chat.lastMessage = messageToEdit
-        await redis.set(`chat:${chatId}`, JSON.stringify(chat))
-      }
-    }
-
-    // Publish message update to Redis channel for real-time updates
-    try {
-      await redis.publish(
-        "message_updated",
-        JSON.stringify({
-          type: "edit",
-          message: messageToEdit,
-        }),
-      )
-    } catch (error) {
-      console.error("Error publishing message update:", error)
-    }
-
-    return { success: true, message: messageToEdit }
-  } catch (error) {
-    console.error("Error editing message:", error)
-    return { success: false, message: "An error occurred while editing the message" }
-  }
-}
-
-// Delete a message
-export async function deleteMessage(messageId: string, chatId: string, userId: string) {
-  try {
-    // Get all messages for the chat
-    const messagesData = await redis.lrange(`chat:${chatId}:messages`, 0, -1)
-
-    if (!messagesData || !Array.isArray(messagesData)) {
-      return { success: false, message: "Messages not found" }
-    }
-
-    let messageIndex = -1
-    let messageToDelete: Message | null = null
-
-    // Find the message to delete
-    for (let i = 0; i < messagesData.length; i++) {
-      try {
-        const msg = safeJsonParse<Message>(messagesData[i], {} as Message)
-        if (msg.id === messageId) {
-          messageToDelete = msg
-          messageIndex = i
-          break
-        }
-      } catch (error) {
-        console.error("Error parsing message:", error)
-      }
-    }
-
-    if (!messageToDelete || messageIndex === -1) {
-      return { success: false, message: "Message not found" }
-    }
-
-    // Check if the user is the sender of the message
-    if (messageToDelete.senderId !== userId) {
-      return { success: false, message: "You can only delete your own messages" }
-    }
-
-    // Mark the message as deleted (we don't actually remove it)
-    messageToDelete.deleted = true
-    messageToDelete.content = "This message has been deleted"
-    messageToDelete.fileUrl = undefined
-    messageToDelete.fileName = undefined
-    messageToDelete.fileType = undefined
-
-    // Save the updated message
-    await redis.lset(`chat:${chatId}:messages`, messageIndex, JSON.stringify(messageToDelete))
-
-    // Update last message if this was the last message
-    const chatData = await redis.get(`chat:${chatId}`)
-    if (chatData) {
-      const chat = safeJsonParse<Chat>(chatData, {} as Chat)
-      if (chat.lastMessage?.id === messageId) {
-        chat.lastMessage = messageToDelete
-        await redis.set(`chat:${chatId}`, JSON.stringify(chat))
-      }
-    }
-
-    // Publish message update to Redis channel for real-time updates
-    try {
-      await redis.publish(
-        "message_updated",
-        JSON.stringify({
-          type: "delete",
-          message: messageToDelete,
-        }),
-      )
-    } catch (error) {
-      console.error("Error publishing message update:", error)
-    }
-
-    return { success: true, message: messageToDelete }
-  } catch (error) {
-    console.error("Error deleting message:", error)
-    return { success: false, message: "An error occurred while deleting the message" }
-  }
-}
-
-// Mark message as read
-export async function markMessageAsRead(messageId: string, chatId: string, userId: string) {
-  try {
-    // Get all messages for the chat
-    const messagesData = await redis.lrange(`chat:${chatId}:messages`, 0, -1)
-
-    if (!messagesData || !Array.isArray(messagesData)) {
-      return { success: false, message: "Messages not found" }
-    }
-
-    let messageIndex = -1
-    let messageToUpdate: Message | null = null
-
-    // Find the message to update
-    for (let i = 0; i < messagesData.length; i++) {
-      try {
-        const msg = safeJsonParse<Message>(messagesData[i], {} as Message)
-        if (msg.id === messageId) {
-          messageToUpdate = msg
-          messageIndex = i
-          break
-        }
-      } catch (error) {
-        console.error("Error parsing message:", error)
-      }
-    }
-
-    if (!messageToUpdate || messageIndex === -1) {
-      return { success: false, message: "Message not found" }
-    }
-
-    // Initialize readBy array if it doesn't exist
-    if (!messageToUpdate.readBy) {
-      messageToUpdate.readBy = []
-    }
-
-    // Add user to readBy if not already there
-    if (!messageToUpdate.readBy.includes(userId)) {
-      messageToUpdate.readBy.push(userId)
-
-      // Save the updated message
-      await redis.lset(`chat:${chatId}:messages`, messageIndex, JSON.stringify(messageToUpdate))
-
-      // Mark notification as read
-      await markNotificationAsRead(userId, messageId)
-    }
-
-    return { success: true, message: messageToUpdate }
-  } catch (error) {
-    console.error("Error marking message as read:", error)
-    return { success: false, message: "An error occurred while marking the message as read" }
-  }
-}
-
-// Mark notification as read
-export async function markNotificationAsRead(userId: string, messageId: string) {
-  try {
-    // Check if userId and messageId are valid
-    if (!userId || !messageId) {
-      console.error("Invalid userId or messageId provided to markNotificationAsRead")
-      return { success: false, message: "Invalid parameters" }
-    }
-
-    const notificationsData = await safeRedisOperation(
-      async () => await redis.lrange(`user:${userId}:notifications`, 0, -1),
-      [],
-    )
-
-    if (!notificationsData || !Array.isArray(notificationsData)) {
-      console.log("No notifications found or invalid data format:", notificationsData)
-      return { success: false, message: "Notifications not found" }
-    }
-
-    let updated = false
-
-    // Find and update notifications related to this message
-    for (let i = 0; i < notificationsData.length; i++) {
-      try {
-        let notification: Notification
-
-        if (typeof notificationsData[i] === "string") {
-          notification = JSON.parse(notificationsData[i]) as Notification
-        } else if (typeof notificationsData[i] === "object" && notificationsData[i] !== null) {
-          notification = notificationsData[i] as Notification
-        } else {
-          console.error("Invalid notification data format at index", i, notificationsData[i])
-          continue
-        }
-
-        if (notification.messageId === messageId && !notification.read) {
-          notification.read = true
-          await redis.lset(`user:${userId}:notifications`, i, JSON.stringify(notification))
-          updated = true
-        }
-      } catch (error) {
-        console.error("Error processing notification at index", i, ":", error)
-      }
-    }
-
-    return { success: updated }
-  } catch (error) {
-    console.error("Error marking notification as read:", error instanceof Error ? error.message : "Unknown error")
-    return { success: false, message: "An error occurred while marking the notification as read" }
-  }
-}
-
-// Get user notifications
-export async function getUserNotifications(userId: string) {
-  try {
-    // Check if userId is valid
-    if (!userId) {
-      console.error("Invalid userId provided to getUserNotifications")
-      return []
-    }
-
-    // Use safeRedisOperation to handle Redis errors gracefully
-    const notificationsData = await safeRedisOperation(
-      async () => await redis.lrange(`user:${userId}:notifications`, 0, 19), // Get last 20 notifications
-      [],
-    )
-
-    if (!notificationsData || !Array.isArray(notificationsData)) {
-      console.log("No notifications found or invalid data format:", notificationsData)
-      return []
-    }
-
-    // Safely parse each notification
-    return notificationsData
-      .map((data) => {
-        try {
-          if (typeof data === "string") {
-            return JSON.parse(data)
-          } else if (typeof data === "object" && data !== null) {
-            return data
-          }
-          return null
-        } catch (error) {
-          console.error("Error parsing notification data:", error)
-          return null
-        }
-      })
-      .filter(Boolean) as Notification[]
-  } catch (error) {
-    // Improved error logging
-    console.error(
-      "Error getting user notifications:",
-      error instanceof Error ? error.message : "Unknown error",
-      error instanceof Error && error.stack ? error.stack : "",
-    )
-    return []
-  }
-}
-
-// Get unread notification count
-export async function getUnreadNotificationCount(userId: string) {
-  try {
-    // Check if userId is valid
-    if (!userId) {
-      console.error("Invalid userId provided to getUnreadNotificationCount")
+    if (error) {
+      console.error("Error fetching unread notification count:", error)
       return 0
     }
 
-    const notifications = await getUserNotifications(userId)
-    return Array.isArray(notifications) ? notifications.filter((n) => n && !n.read).length : 0
+    return count ?? 0
   } catch (error) {
-    // Improved error logging
-    console.error("Error getting unread notification count:", error instanceof Error ? error.message : "Unknown error")
+    console.error("Unexpected error fetching unread notification count:", error)
     return 0
   }
 }
 
-// Create a new chat
-export async function createChat(name: string, isGroup: boolean, createdBy: string, members: string[], icon?: string) {
+// Edit a message
+export async function editMessage(
+  messageId: string,
+  chatId: string,
+  content: string,
+  userId: string
+): Promise<{ success: boolean; message?: string }> {
   try {
-    const chatId = generateId()
+    // Check ownership
+    const { data: msg, error: fetchError } = await supabase
+      .from('messages')
+      .select('senderId, timestamp')
+      .eq('id', messageId)
+      .single()
 
-    const chat: Chat = {
-      id: chatId,
-      name,
-      isGroup,
-      createdBy,
-      members: [createdBy, ...members.filter((id) => id !== createdBy)],
-      createdAt: Date.now(),
-      theme: "default",
-      icon,
+    if (fetchError || !msg) {
+      return { success: false, message: 'Message not found' }
     }
 
-    // Store chat in Redis
-    await redis.set(`chat:${chatId}`, JSON.stringify(chat))
-
-    // Add chat to each member's chat list
-    for (const memberId of chat.members) {
-      await redis.sadd(`user:${memberId}:chats`, chatId)
+    if (msg.senderId !== userId) {
+      return { success: false, message: 'You can only edit your own messages' }
     }
 
-    return chat
+    // Check 15-minute edit window
+    const now = Date.now()
+    if (now - msg.timestamp > 15 * 60 * 1000) {
+      return { success: false, message: 'Edit window has expired (15 minutes)' }
+    }
+
+    const { error } = await supabase
+      .from('messages')
+      .update({ content, edited: true })
+      .eq('id', messageId)
+      .eq('chatId', chatId)
+
+    if (error) {
+      console.error('Error editing message:', error)
+      return { success: false, message: error.message }
+    }
+
+    return { success: true }
   } catch (error) {
-    console.error("Error creating chat:", error)
-    throw error
+    console.error('Error in editMessage:', error)
+    return { success: false, message: 'Internal error' }
   }
 }
 
-// Update chat settings
-export async function updateChatSettings(chatId: string, updates: Partial<Chat>, userId: string) {
+// Delete / recall a message
+export async function deleteMessage(
+  messageId: string,
+  chatId: string,
+  userId: string
+): Promise<{ success: boolean; message?: string }> {
   try {
-    const chatData = await redis.get(`chat:${chatId}`)
-    if (!chatData) {
-      return { success: false, message: "Chat not found" }
+    const { data: msg, error: fetchError } = await supabase
+      .from('messages')
+      .select('senderId')
+      .eq('id', messageId)
+      .single()
+
+    if (fetchError || !msg) {
+      return { success: false, message: 'Message not found' }
     }
 
-    const chat = safeJsonParse<Chat>(chatData, {} as Chat)
-
-    // Check if user is a member of the chat
-    if (!chat.members.includes(userId)) {
-      return { success: false, message: "You are not a member of this chat" }
+    if (msg.senderId !== userId) {
+      return { success: false, message: 'You can only delete your own messages' }
     }
 
-    // For group chats, only creator can update settings
-    if (chat.isGroup && chat.createdBy !== userId) {
-      return { success: false, message: "Only the chat creator can update group settings" }
+    // Soft delete: replace content with recall message
+    const { error } = await supabase
+      .from('messages')
+      .update({ content: 'Tin nhắn đã được thu hồi', deleted: true })
+      .eq('id', messageId)
+      .eq('chatId', chatId)
+
+    if (error) {
+      console.error('Error deleting message:', error)
+      return { success: false, message: error.message }
     }
 
-    // Update chat settings
-    const updatedChat = { ...chat, ...updates }
-    await redis.set(`chat:${chatId}`, JSON.stringify(updatedChat))
-
-    return { success: true, chat: updatedChat }
+    return { success: true }
   } catch (error) {
-    console.error("Error updating chat settings:", error)
-    return { success: false, message: "An error occurred while updating chat settings" }
+    console.error('Error in deleteMessage:', error)
+    return { success: false, message: 'Internal error' }
   }
 }
 
-// Get chats for a user
-export async function getUserChats(userId: string) {
-  try {
-    const chatIds = await redis.smembers(`user:${userId}:chats`)
-    const chats: Chat[] = []
-
-    for (const chatId of chatIds) {
-      const chatData = await redis.get(`chat:${chatId}`)
-      if (chatData) {
-        chats.push(
-          safeJsonParse<Chat>(chatData, {
-            id: chatId,
-            name: "Unknown Chat",
-            isGroup: false,
-            createdBy: "",
-            members: [],
-            createdAt: Date.now(),
-          }),
-        )
-      }
-    }
-
-    // Sort by last message timestamp or creation date
-    return chats.sort((a, b) => {
-      const aTime = a.lastMessage?.timestamp || a.createdAt
-      const bTime = b.lastMessage?.timestamp || b.createdAt
-      return bTime - aTime
-    })
-  } catch (error) {
-    console.error("Error getting user chats:", error)
-    return []
-  }
-}
-
-// Get all users
-export async function getAllUsers() {
-  try {
-    const usersData = await redis.hgetall("users")
-    if (!usersData) return []
-
-    const users = []
-    for (const [username, userData] of Object.entries(usersData)) {
-      try {
-        const user = safeJsonParse(userData, { id: "", username: "Unknown", password: "", createdAt: Date.now() })
-        // Don't return password
-        const { password, ...userWithoutPassword } = user
-        users.push(userWithoutPassword)
-      } catch (error) {
-        console.error("Error parsing user data:", error)
-      }
-    }
-    return users
-  } catch (error) {
-    console.error("Error getting all users:", error)
-    return []
-  }
-}
-
-// Update user presence
-export async function updateUserPresence(userId: string, isOnline: boolean) {
-  try {
-    await redis.hset("user_presence", { [userId]: isOnline ? "online" : "offline" })
-    // Publish presence update to Redis channel
-    try {
-      await redis.publish("presence_update", JSON.stringify({ userId, status: isOnline ? "online" : "offline" }))
-    } catch (error) {
-      console.error("Error publishing presence update:", error)
-      // Continue even if publishing fails
-    }
-  } catch (error) {
-    console.error("Error updating user presence:", error)
-    throw error
-  }
-}
-
-// Get user presence
-export async function getUserPresence(userId: string) {
-  try {
-    const status = await redis.hget("user_presence", userId)
-    return status === "online"
-  } catch (error) {
-    console.error("Error getting user presence:", error)
-    return false
-  }
-}
-
-// Get multiple users' presence
-export async function getUsersPresence(userIds: string[]) {
-  try {
-    const presence: Record<string, boolean> = {}
-
-    for (const userId of userIds) {
-      presence[userId] = await getUserPresence(userId)
-    }
-
-    return presence
-  } catch (error) {
-    console.error("Error getting users presence:", error)
-    return {}
-  }
-}
-
-// Add this helper function if it doesn't exist already
-export async function safeRedisOperation<T>(operation: () => Promise<T>, fallback: T): Promise<T> {
-  try {
-    return await operation()
-  } catch (error) {
-    console.error("Redis operation failed:", error instanceof Error ? error.message : "Unknown error")
-    return fallback
-  }
-}

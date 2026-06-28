@@ -1,4 +1,5 @@
 // api/messages/cleanup/route.ts
+export const runtime = "nodejs";
 import { NextResponse } from "next/server";
 import { deleteExpiredMessages } from "@/lib/message-cleaner";
 

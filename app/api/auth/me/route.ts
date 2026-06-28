@@ -1,3 +1,4 @@
+export const runtime = "nodejs";
 import { NextResponse } from "next/server"
 import { getCurrentUser } from "@/lib/auth"
 
@@ -9,10 +10,7 @@ export async function GET() {
       return NextResponse.json(null)
     }
 
-    // Don't return the password
-    const { password, ...userWithoutPassword } = user
-
-    return NextResponse.json(userWithoutPassword)
+    return NextResponse.json(user)
   } catch (error) {
     console.error(
       "Error in /api/auth/me:",

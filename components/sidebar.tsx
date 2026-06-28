@@ -14,9 +14,26 @@ import { ChatHeader } from "@/components/chat-header"
 import { MessageList } from "@/components/message-list"
 import { MessageInput } from "@/components/message-input"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
-import { MessageSquarePlus, Settings, Users } from "lucide-react"
+import { MessageSquarePlus, Settings, Users, Pin, BellOff, CheckCheck, Trash2, Archive, MoreVertical } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { DialogTrigger } from "@/components/ui/dialog"
+import { StatusDot } from "@/components/status-dot"
+
+function formatTime(ts: number): string {
+  const now = Date.now()
+  const diff = now - ts
+  const date = new Date(ts)
+  if (diff < 86400000) return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  if (diff < 172800000) return 'Yesterday'
+  return date.toLocaleDateString([], { month: 'short', day: 'numeric' })
+}
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 
 interface SidebarProps {
   user: User
@@ -38,6 +55,32 @@ export function Sidebar({ user }: SidebarProps) {
   const [friends, setFriends] = useState<any[]>([])
   const [loadingFriends, setLoadingFriends] = useState(false)
   const [searchTerm, setSearchTerm] = useState("")
+  const [unreadCounts, setUnreadCounts] = useState<Record<string, number>>({})
+  const [onlineUsers, setOnlineUsers] = useState<Record<string, boolean>>({})
+
+  const fetchOnlineStatus = useCallback(async () => {
+    try {
+      const res = await fetch("/api/users")
+      if (res.ok) {
+        const data = await res.json()
+        const map: Record<string, boolean> = {}
+        data.forEach((u: any) => { if (u.is_online) map[u.id] = true })
+        setOnlineUsers(map)
+      }
+    } catch {}
+  }, [])
+
+  const fetchUnreadCounts = useCallback(async () => {
+    try {
+      const response = await fetch("/api/chats/unread")
+      if (response.ok) {
+        const data = await response.json()
+        setUnreadCounts(data)
+      }
+    } catch (error) {
+      console.error("Error fetching unread counts:", error)
+    }
+  }, [])
 
   const fetchChats = useCallback(async () => {
     try {
@@ -75,9 +118,15 @@ export function Sidebar({ user }: SidebarProps) {
 
   useEffect(() => {
     fetchChats()
-    const interval = setInterval(fetchChats, usePolling ? 3000 : 10000)
+    fetchUnreadCounts()
+    fetchOnlineStatus()
+    const interval = setInterval(() => {
+      fetchChats()
+      fetchUnreadCounts()
+      fetchOnlineStatus()
+    }, usePolling ? 3000 : 10000)
     return () => clearInterval(interval)
-  }, [fetchChats, usePolling])
+  }, [fetchChats, fetchUnreadCounts, fetchOnlineStatus, usePolling])
 
   useEffect(() => {
     const checkMobile = () => setIsMobile(window.innerWidth < 1024)
@@ -263,16 +312,23 @@ export function Sidebar({ user }: SidebarProps) {
                               <span className="text-white text-xl font-bold">{chat.name.charAt(0).toUpperCase()}</span>
                             )}
                           </div>
-                          <div className="flex-1 min-w-0">
+                          <div className="flex-1 min-w-0 overflow-hidden">
                             <p className="text-base font-medium truncate text-white">{chat.name}</p>
                             {chat.lastMessage && (
                               <p className="text-sm truncate opacity-70 text-gray-300">
-                                {chat.lastMessage.senderName}: {chat.lastMessage.deleted ? "This message was deleted" : chat.lastMessage.fileUrl ? "Sent a file" : chat.lastMessage.content}
+                                {chat.lastMessage.senderName}: {chat.lastMessage.deleted ? "Deleted" : chat.lastMessage.fileUrl ? "Sent a file" : chat.lastMessage.content}
                               </p>
                             )}
                           </div>
-                          <div className="text-xs text-gray-400 whitespace-nowrap">
-                            {/* Hiển thị thời gian hoặc ngày ở đây nếu muốn */}
+                          <div className="flex flex-col items-end space-y-0.5 ml-2 shrink-0">
+                            {chat.lastMessage && (
+                              <span className="text-xs text-gray-500 whitespace-nowrap">{formatTime(chat.lastMessage.timestamp)}</span>
+                            )}
+                            {unreadCounts[chat.id] > 0 && (
+                              <div className="h-4 min-w-[16px] rounded-full bg-red-500 flex items-center justify-center px-1">
+                                <span className="text-[10px] font-bold text-white">{unreadCounts[chat.id]}</span>
+                              </div>
+                            )}
                           </div>
                         </div>
                       ))}
@@ -404,12 +460,23 @@ export function Sidebar({ user }: SidebarProps) {
         </div>
       </div>
 
+      {/* Search */}
+      <div className="px-4 py-2 border-b border-gray-800">
+        <input
+          type="text"
+          placeholder="Search conversations..."
+          value={searchTerm}
+          onChange={(e) => setSearchTerm(e.target.value)}
+          className="w-full rounded-lg px-3 py-1.5 bg-gray-800 text-white placeholder-gray-500 text-sm focus:outline-none focus:ring-1 focus:ring-blue-600"
+        />
+      </div>
+
       {/* Create Chat Section */}
       <div className="p-4 border-b border-gray-800">
         <CreateChatDialog
           onChatCreated={(chat) => {
             setChats((prev) => [chat, ...prev])
-            fetchChats() // Refresh chat list after creating new chat
+            fetchChats()
           }}
         />
       </div>
@@ -423,46 +490,90 @@ export function Sidebar({ user }: SidebarProps) {
             </div>
           ) : chats.length > 0 ? (
             <div className="space-y-2">
-              {chats.map((chat) => (
-                <div
-                  key={chat.id}
-                  onClick={() => handleChatSelect(chat)}
-                  className={cn(
-                    "flex items-center space-x-3 px-3 py-2 rounded-md transition-colors cursor-pointer",
-                    pathname === `/chat/${chat.id}`
-                      ? "bg-gray-800 text-white"
-                      : "text-gray-400 hover:text-white hover:bg-gray-800/50"
-                  )}
-                >
-                  <div
-                    className={cn(
-                      "h-10 w-10 rounded-full flex items-center justify-center",
-                      chat.isGroup
-                        ? "bg-gradient-to-r from-green-600 to-teal-600"
-                        : "bg-gradient-to-r from-purple-600 to-blue-600"
-                    )}
+              {(searchTerm.trim()
+                ? chats.filter(c => c.name.toLowerCase().includes(searchTerm.toLowerCase()))
+                : chats
+              ).map((chat) => {
+                const otherUserId = chat.isGroup ? null : chat.members.find((m: string) => m !== user.id)
+                const isOnline = otherUserId ? onlineUsers[otherUserId] : false
+
+                return (
+                  <div key={chat.id} className={cn("group relative flex items-center px-3 py-2 rounded-md transition-colors cursor-pointer hover:bg-gray-800/50", pathname === `/chat/${chat.id}` && "bg-gray-800")}
+                    onClick={() => handleChatSelect(chat)}
                   >
-                    {chat.isGroup ? (
-                      <Users className="h-5 w-5 text-white" />
-                    ) : (
-                      <span className="text-white text-xl font-bold">{chat.name.charAt(0).toUpperCase()}</span>
-                    )}
+                    <div className="relative shrink-0">
+                      <div
+                        className={cn(
+                          "h-10 w-10 rounded-full flex items-center justify-center",
+                          chat.isGroup
+                            ? "bg-gradient-to-r from-green-600 to-teal-600"
+                            : "bg-gradient-to-r from-purple-600 to-blue-600"
+                        )}
+                      >
+                        {chat.isGroup ? (
+                          <Users className="h-5 w-5 text-white" />
+                        ) : (
+                          <span className="text-white text-xl font-bold">{chat.name.charAt(0).toUpperCase()}</span>
+                        )}
+                      </div>
+                      {!chat.isGroup && <StatusDot isOnline={isOnline} />}
+                    </div>
+                    <div className="flex-1 min-w-0 ml-3 overflow-hidden">
+                      <p className={cn("text-lg font-medium truncate", pathname === `/chat/${chat.id}` ? "text-white" : "text-gray-400")}>{chat.name}</p>
+                      {chat.lastMessage && (
+                        <p className="text-sm truncate opacity-70 text-gray-400">
+                          {chat.lastMessage.senderName}:{" "}
+                          {chat.lastMessage.deleted
+                            ? "Deleted"
+                            : chat.lastMessage.fileUrl
+                            ? "Sent a file"
+                            : chat.lastMessage.content}
+                        </p>
+                      )}
+                    </div>
+                    <div className="flex flex-col items-end justify-center space-y-1 ml-2 shrink-0" onClick={(e) => e.stopPropagation()}>
+                      {chat.lastMessage && (
+                        <span className="text-[11px] text-gray-600 whitespace-nowrap">{formatTime(chat.lastMessage.timestamp)}</span>
+                      )}
+                      {unreadCounts[chat.id] > 0 && (
+                        <div className="h-5 min-w-[20px] rounded-full bg-red-500 flex items-center justify-center px-1.5">
+                          <span className="text-xs font-bold text-white">{unreadCounts[chat.id]}</span>
+                        </div>
+                      )}
+                    </div>
+                    <div className="ml-1 shrink-0" onClick={(e) => e.stopPropagation()}>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <button className="h-7 w-7 rounded-full flex items-center justify-center text-gray-500 hover:bg-gray-700 hover:text-white">
+                            <MoreVertical className="h-4 w-4" />
+                          </button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="start" className="bg-gray-800 border-gray-700 text-white min-w-[180px]">
+                          <DropdownMenuItem onClick={() => handleChatSelect(chat)} className="cursor-pointer hover:bg-gray-700">
+                            Open
+                          </DropdownMenuItem>
+                          <DropdownMenuItem className="cursor-pointer hover:bg-gray-700">
+                            <CheckCheck className="h-4 w-4 mr-2" /> Mark as Read
+                          </DropdownMenuItem>
+                          <DropdownMenuItem className="cursor-pointer hover:bg-gray-700">
+                            <Pin className="h-4 w-4 mr-2" /> Pin
+                          </DropdownMenuItem>
+                          <DropdownMenuItem className="cursor-pointer hover:bg-gray-700">
+                            <BellOff className="h-4 w-4 mr-2" /> Mute
+                          </DropdownMenuItem>
+                          <DropdownMenuItem className="cursor-pointer hover:bg-gray-700">
+                            <Archive className="h-4 w-4 mr-2" /> Archive
+                          </DropdownMenuItem>
+                          <DropdownMenuSeparator className="bg-gray-700" />
+                          <DropdownMenuItem className="cursor-pointer text-red-400 hover:bg-gray-700 hover:text-red-300">
+                            <Trash2 className="h-4 w-4 mr-2" /> Delete
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </div>
                   </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-lg font-medium truncate">{chat.name}</p>
-                    {chat.lastMessage && (
-                      <p className="text-sm truncate opacity-70">
-                        {chat.lastMessage.senderName}:{" "}
-                        {chat.lastMessage.deleted
-                          ? "This message was deleted"
-                          : chat.lastMessage.fileUrl
-                          ? "Sent a file"
-                          : chat.lastMessage.content}
-                      </p>
-                    )}
-                  </div>
-                </div>
-              ))}
+                )
+              })}
             </div>
           ) : (
             <div className="text-center py-6 text-gray-500">

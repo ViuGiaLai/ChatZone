@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState, useCallback } from "react"
+import { useEffect, useState, useCallback, use } from "react"
 import { useRouter } from "next/navigation"
 import { ChatHeader } from "@/components/chat-header"
 import { MessageList } from "@/components/message-list"
@@ -65,7 +65,8 @@ async function markMessageAsRead(messageId: string, chatId: string) {
   }
 }
 
-export default function ChatPage({ params }: { params: { id: string } }) {
+export default function ChatPage({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = use(params)
   const router = useRouter()
   const { usePolling } = useWebSocket()
   const [user, setUser] = useState<any>(null)
@@ -79,11 +80,11 @@ export default function ChatPage({ params }: { params: { id: string } }) {
   const [authError, setAuthError] = useState<boolean>(false)
 
   const fetchMessages = useCallback(async () => {
-    if (!params.id) return
+    if (!id) return
 
     try {
       setFetchError(null)
-      const messagesData = await getMessages(params.id)
+      const messagesData = await getMessages(id)
       setMessages(Array.isArray(messagesData) ? messagesData : [])
     } catch (error) {
       console.error("Error fetching messages:", error)
@@ -98,7 +99,7 @@ export default function ChatPage({ params }: { params: { id: string } }) {
       setFetchError("Failed to fetch messages. Retrying...")
       // Don't set error state here to avoid disrupting the UI during polling
     }
-  }, [params.id, router])
+  }, [id, router])
 
   const fetchUsers = useCallback(async () => {
     try {
@@ -122,11 +123,11 @@ export default function ChatPage({ params }: { params: { id: string } }) {
 
   const handleMessageRead = useCallback(
     (messageId: string) => {
-      if (params.id) {
-        markMessageAsRead(messageId, params.id)
+      if (id) {
+        markMessageAsRead(messageId, id)
       }
     },
-    [params.id],
+    [id],
   )
 
   const handleRetry = useCallback(() => {
@@ -156,7 +157,7 @@ export default function ChatPage({ params }: { params: { id: string } }) {
 
         // Try to get chat data
         try {
-          const chatData = await getChatData(params.id)
+          const chatData = await getChatData(id)
           setChat(chatData)
 
           // Check if user is a member of this chat
@@ -168,10 +169,15 @@ export default function ChatPage({ params }: { params: { id: string } }) {
         } catch (chatError) {
           console.error("Error loading chat:", chatError)
 
-          // Check if it's an authentication error
           if (chatError instanceof Error && chatError.message.includes("Unauthorized")) {
             setAuthError(true)
             router.push("/login")
+            return
+          }
+
+          // Chat not found — redirect to dashboard
+          if (chatError instanceof Error && chatError.message.includes("not found")) {
+            router.push("/dashboard")
             return
           }
 
@@ -232,7 +238,7 @@ export default function ChatPage({ params }: { params: { id: string } }) {
         clearInterval(interval)
       }
     }
-  }, [params.id, router, fetchMessages, fetchUsers, usePolling, retryCount])
+  }, [id, router, fetchMessages, fetchUsers, usePolling, retryCount])
 
   if (authError) {
     // If there's an authentication error, we'll redirect to login
@@ -292,25 +298,25 @@ export default function ChatPage({ params }: { params: { id: string } }) {
     <>
       <ChatHeader
         chat={chat}
+        currentUserId={user.id}
         onChatUpdated={(updatedChat) => setChat(updatedChat)}
-        className="block lg:hidden"
       />
 
       {fetchError && (
-        <Alert variant="destructive" className="m-2 bg-red-900/20 border-red-800 block lg:hidden">
+        <Alert variant="destructive" className="m-2 bg-red-900/20 border-red-800">
           <AlertCircle className="h-4 w-4" />
           <AlertDescription>{fetchError}</AlertDescription>
         </Alert>
       )}
 
       {usePolling && (
-        <div className="bg-yellow-900/20 border border-yellow-800 text-yellow-300 px-4 py-2 text-sm text-center block lg:hidden">
+        <div className="bg-yellow-900/20 border border-yellow-800 text-yellow-300 px-4 py-2 text-sm text-center">
           Using polling mode. Real-time updates may be delayed.
         </div>
       )}
 
       <MessageList
-        className="block lg:hidden w-full"
+        className="w-full flex-1"
         messages={messages}
         currentUserId={user.id}
         chatTheme={chat.theme}
@@ -319,10 +325,11 @@ export default function ChatPage({ params }: { params: { id: string } }) {
       />
 
       <MessageInput
-        chatId={params.id}
+        chatId={id}
+        userId={user.id}
+        username={user.username}
         onMessageSent={fetchMessages}
         chatTheme={chat.theme}
-        className="block lg:hidden"
       />
     </>
   )

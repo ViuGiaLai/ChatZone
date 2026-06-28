@@ -1,8 +1,8 @@
+export const runtime = "nodejs";
 import { NextResponse } from "next/server"
 import { getCurrentUser } from "@/lib/auth"
 import { sendMessage } from "@/lib/chat"
-import { redis, safeRedisOperation } from "@/lib/redis"
-import type { Chat } from "@/lib/chat"
+import { supabase } from "@/lib/db"
 
 export async function POST(request: Request) {
   try {
@@ -11,17 +11,14 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     }
 
-    // Parse request body
-    let content, chatId, fileUrl, fileName, fileType
+    let content, chatId, fileUrl, fileName
     try {
       const body = await request.json()
       content = body.content
       chatId = body.chatId
       fileUrl = body.fileUrl
       fileName = body.fileName
-      fileType = body.fileType
     } catch (error) {
-      console.error("Error parsing request body:", error)
       return NextResponse.json({ error: "Invalid request body" }, { status: 400 })
     }
 
@@ -34,37 +31,22 @@ export async function POST(request: Request) {
     }
 
     // Verify the chat exists and user is a member
-    const chatData = await safeRedisOperation(async () => await redis.get(`chat:${chatId}`), null)
-    if (!chatData) {
+    const { data: chat, error: chatError } = await supabase
+      .from('chats')
+      .select('members')
+      .eq('id', chatId)
+      .single()
+
+    if (chatError || !chat) {
       return NextResponse.json({ error: "Chat not found" }, { status: 404 })
     }
 
-    // Safely parse chat data
-    let chat: Chat
-    try {
-      if (typeof chatData === "string") {
-        chat = JSON.parse(chatData) as Chat
-      } else if (chatData !== null) {
-        // If it's already an object, use it directly
-        chat = chatData as Chat
-      } else {
-        return NextResponse.json({ error: "Invalid chat data" }, { status: 500 })
-      }
-    } catch (error) {
-      console.error("Error parsing chat data:", error)
-      return NextResponse.json({ error: "Invalid chat data" }, { status: 500 })
-    }
-
-    // Check if user is a member of the chat
-    if (!chat.members || !Array.isArray(chat.members)) {
-      return NextResponse.json({ error: "Invalid chat members data" }, { status: 500 })
-    }
-
-    if (!chat.members.includes(user.id)) {
+    const members = chat.members || []
+    if (!members.includes(user.id)) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 403 })
     }
 
-    const message = await sendMessage(content || "", chatId, user.id, user.username, fileUrl, fileName, fileType)
+    const message = await sendMessage(content || "", chatId, user.id, user.username, fileUrl, fileName)
     return NextResponse.json(message)
   } catch (error) {
     console.error("Error sending message:", error instanceof Error ? error.message : "Unknown error")

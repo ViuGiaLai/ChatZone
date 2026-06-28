@@ -2,21 +2,25 @@
 
 import type React from "react"
 
-import { useState, useRef, useEffect } from "react"
+import { useState, useRef, useEffect, useCallback } from "react"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
-import { Paperclip, Send, X, AlertCircle } from "lucide-react"
+import { Paperclip, Send, X, AlertCircle, Smile } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { toast } from "@/hooks/use-toast"
+import { broadcastTyping } from "@/lib/chat"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 
 interface MessageInputProps {
   className?: string
   chatId: string
+  userId?: string
+  username?: string
   onMessageSent?: () => void
   chatTheme?: string
 }
 
-export function MessageInput({ chatId, onMessageSent, chatTheme = "default" }: MessageInputProps) {
+export function MessageInput({ className, chatId, userId, username, onMessageSent, chatTheme = "default" }: MessageInputProps) {
   const [message, setMessage] = useState("")
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [file, setFile] = useState<File | null>(null)
@@ -24,6 +28,22 @@ export function MessageInput({ chatId, onMessageSent, chatTheme = "default" }: M
   const [error, setError] = useState<string | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const typingTimerRef = useRef<NodeJS.Timeout | null>(null)
+  const lastTypingRef = useRef(0)
+
+  const handleTyping = useCallback(() => {
+    if (!userId || !username) return
+    const now = Date.now()
+    if (now - lastTypingRef.current > 2000) {
+      lastTypingRef.current = now
+      broadcastTyping(chatId, userId, username)
+    }
+  }, [chatId, userId, username])
+
+  const handleMessageChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    setMessage(e.target.value)
+    handleTyping()
+  }
 
   // Auto-resize textarea
   useEffect(() => {
@@ -92,7 +112,6 @@ export function MessageInput({ chatId, onMessageSent, chatTheme = "default" }: M
     try {
       let fileUrl = null
       let fileName = null
-      let fileType = null
 
       // Upload file if present
       if (file) {
@@ -113,7 +132,7 @@ export function MessageInput({ chatId, onMessageSent, chatTheme = "default" }: M
           const uploadData = await uploadResponse.json()
           fileUrl = uploadData.url
           fileName = file.name
-          fileType = file.type
+          
         } catch (uploadError) {
           console.error("Error uploading file:", uploadError)
           setError("Failed to upload file. Please try again.")
@@ -137,7 +156,7 @@ export function MessageInput({ chatId, onMessageSent, chatTheme = "default" }: M
           chatId,
           fileUrl,
           fileName,
-          fileType,
+          
         }),
       })
 
@@ -179,7 +198,7 @@ export function MessageInput({ chatId, onMessageSent, chatTheme = "default" }: M
   }
 
   return (
-    <div className="p-4 border-t border-gray-800 bg-gray-900">
+    <div className={cn("p-4 border-t border-gray-800 bg-gray-900", className)}>
       {error && (
         <div className="mb-2 p-2 bg-red-900/50 text-white rounded-md flex items-center space-x-2">
           <AlertCircle className="h-4 w-4" />
@@ -210,11 +229,32 @@ export function MessageInput({ chatId, onMessageSent, chatTheme = "default" }: M
           variant="ghost"
           size="icon"
           onClick={handleAttachClick}
-          className="h-9 w-9 text-gray-400 hover:text-white"
+          className="h-9 w-9 text-gray-400 hover:text-white shrink-0"
         >
           <Paperclip className="h-5 w-5" />
           <span className="sr-only">Attach file</span>
         </Button>
+        <Popover>
+          <PopoverTrigger asChild>
+            <Button type="button" variant="ghost" size="icon" className="h-9 w-9 text-gray-400 hover:text-yellow-400 shrink-0">
+              <Smile className="h-5 w-5" />
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent side="top" align="start" className="bg-gray-800 border-gray-700 w-[280px] p-2">
+            <div className="grid grid-cols-7 gap-1">
+              {["😀","😁","😂","🤣","😃","😄","😅","😆","😉","😊","😋","😎","😍","🥰","😘","😗","😙","😚","🙂","🤗","🤩","🤔","🤨","😐","😑","😶","🙄","😏","😣","😥","😮","🤐","😯","😪","😫","😴","😌","😛","😜","😝","🤤","😒","😓","😔","😕","🙃","🤑","😲","☹️","🙁","😖","😞","😟","😤","😢","😭","😦","😧","😨","😩","🤯","😬","😰","😱","🥵","🥶","😳","🤪","😵","😡","😠","🤬","👍","👎","👊","✊","🤛","🤜","👏","🙌","👐","🤲","🤝","🙏","✌️","🤞","🫶","❤️","🧡","💛","💚","💙","💜","🖤","🤍","🤎","💕","💗","💖","✨","🔥","⭐","🎉","🎊","🎁","🎈","💯","✅","❌","❓","❗","💬","💭"].map(emoji => (
+                  <button
+                    key={emoji}
+                    type="button"
+                    onClick={() => setMessage(prev => prev + emoji)}
+                    className="p-1 hover:bg-gray-700 rounded text-lg transition-colors"
+                  >
+                    {emoji}
+                  </button>
+                ))}
+            </div>
+          </PopoverContent>
+        </Popover>
         <input type="file" ref={fileInputRef} className="hidden" onChange={handleFileChange} />
         <Textarea
           ref={textareaRef}

@@ -93,14 +93,19 @@ export function CreateChatDialog({ onChatCreated, triggerClassName, triggerConte
         }),
       })
 
-      if (response.ok) {
-        const chat = await response.json()
-        onChatCreated(chat)
+      const responseData = await response.json()
+      
+      if (response.ok && responseData) {
+        console.log('Chat creation response:', responseData)
+        if (!responseData.id) {
+          throw new Error('Invalid chat data received from server')
+        }
+        onChatCreated(responseData)
         setOpen(false)
-        router.push(`/chat/${chat.id}`)
+        router.push(`/chat/${responseData.id}`)
       } else {
-        const errorData = await response.json()
-        setError(errorData.error || "Failed to create chat")
+        console.error('Error response:', responseData)
+        setError(responseData.error || "Failed to create chat")
       }
     } catch (error) {
       console.error("Error creating chat:", error)

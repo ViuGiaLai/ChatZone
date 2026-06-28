@@ -61,9 +61,9 @@ export default function LoginPage() {
       <div className="w-full max-w-md">
         <Card className="border-gray-700 bg-gray-800/50 backdrop-blur-sm">
           <CardHeader className="space-y-1 text-center">
-            <CardTitle className="text-2xl font-bold tracking-tight text-white">Welcome back</CardTitle>
+            <CardTitle className="text-2xl font-bold tracking-tight text-white">Đăng nhập</CardTitle>
             <CardDescription className="text-gray-400">
-              Enter your credentials to sign in to your account
+              Nhập thông tin để đăng nhập vào tài khoản của bạn
             </CardDescription>
           </CardHeader>
 
@@ -97,28 +97,29 @@ export default function LoginPage() {
           )}
 
           <form action={handleSubmit}>
-            <CardContent className="space-y-4 mt-4">
-              <div className="space-y-2">
-                <Label htmlFor="username" className="text-gray-300">
-                  Username
-                </Label>
-                <Input
-                  id="username"
-                  name="username"
-                  placeholder="Enter your username"
-                  required
-                  className="bg-gray-700 border-gray-600 text-white placeholder:text-gray-500"
-                />
-              </div>
+          <CardContent className="space-y-4 mt-4">
+            <div className="space-y-2">
+              <Label htmlFor="email" className="text-gray-300">
+                Email
+              </Label>
+              <Input
+                id="email"
+                name="email"
+                type="email"
+                placeholder="Nhập email"
+                required
+                className="bg-gray-700 border-gray-600 text-white placeholder:text-gray-500"
+              />
+            </div>
               <div className="space-y-2">
                 <Label htmlFor="password" className="text-gray-300">
-                  Password
+                  Mật khẩu
                 </Label>
                 <Input
                   id="password"
                   name="password"
                   type="password"
-                  placeholder="Enter your password"
+                  placeholder="Nhập mật khẩu"
                   required
                   className="bg-gray-700 border-gray-600 text-white placeholder:text-gray-500"
                 />
@@ -127,15 +128,18 @@ export default function LoginPage() {
             <CardFooter className="flex flex-col space-y-4">
               <Button
                 type="submit"
-                disabled={isLoading || (dbStatus && (!dbStatus.configured || !dbStatus.connected))}
+                disabled={
+                  isLoading ||
+                  (dbStatus !== null && (!dbStatus.configured || !dbStatus.connected))
+                }
                 className="w-full bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 text-white"
               >
-                {isLoading ? "Signing In..." : "Sign In"}
+                {isLoading ? "Đang đăng nhập..." : "Đăng nhập"}
               </Button>
               <div className="text-center text-sm text-gray-400">
-                Don't have an account?{" "}
+                Chưa có tài khoản?{" "}
                 <Link href="/register" className="text-blue-400 hover:text-blue-300 underline underline-offset-4">
-                  Sign up
+                  Đăng ký
                 </Link>
               </div>
             </CardFooter>

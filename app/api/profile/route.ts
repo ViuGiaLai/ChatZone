@@ -1,5 +1,7 @@
+export const runtime = "nodejs";
 import { NextResponse } from "next/server"
 import { getCurrentUser, updateUserProfile } from "@/lib/auth"
+import { supabase } from "@/lib/db"
 
 export async function PUT(request: Request) {
   try {
@@ -8,7 +10,6 @@ export async function PUT(request: Request) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     }
 
-    // Parse request body
     const body = await request.json()
     const { username, avatar, profileColor } = body
 
@@ -16,23 +17,21 @@ export async function PUT(request: Request) {
       return NextResponse.json({ error: "Username is required" }, { status: 400 })
     }
 
-    // Check if username is already taken (if it's different from current username)
+    // Check if username is already taken
     if (username !== user.username) {
-      const existingUser = await fetch(`/api/users/check?username=${encodeURIComponent(username)}`)
-      if (existingUser.ok) {
-        const data = await existingUser.json()
-        if (data.exists) {
-          return NextResponse.json({ error: "Username is already taken" }, { status: 400 })
-        }
+      const { data: existing } = await supabase
+        .from('profiles')
+        .select('user_id')
+        .eq('username', username)
+        .neq('user_id', user.id)
+        .maybeSingle()
+
+      if (existing) {
+        return NextResponse.json({ error: "Username is already taken" }, { status: 400 })
       }
     }
 
-    // Update user profile
-    const result = await updateUserProfile(user.id, {
-      username,
-      avatar,
-      profileColor,
-    })
+    const result = await updateUserProfile(user.id, { username, avatar, profileColor })
 
     if (!result.success) {
       return NextResponse.json({ error: result.message }, { status: 500 })
