@@ -230,7 +230,7 @@ export default function ChatPage({ params }: { params: Promise<{ id: string }> }
     let interval: NodeJS.Timeout | null = null
 
     if (usePolling) {
-      interval = setInterval(fetchMessages, 3000)
+      interval = setInterval(fetchMessages, 5000)
     }
 
     return () => {

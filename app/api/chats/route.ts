@@ -1,7 +1,7 @@
 export const runtime = "nodejs";
 import { NextResponse } from "next/server"
 import { getCurrentUser } from "@/lib/auth"
-import { createChat, getUserChats } from "@/lib/chat"
+import { createChat, getUserChats, getUnreadCounts } from "@/lib/chat"
 
 export async function GET() {
   try {
@@ -10,8 +10,11 @@ export async function GET() {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 })
     }
 
-    const chats = await getUserChats(user.id)
-    return NextResponse.json(chats)
+    const [chats, unreadCounts] = await Promise.all([
+      getUserChats(user.id),
+      getUnreadCounts(user.id),
+    ])
+    return NextResponse.json({ chats, unreadCounts })
   } catch (error) {
     console.error("Error fetching chats:", error)
     return NextResponse.json({ error: "Internal server error" }, { status: 500 })

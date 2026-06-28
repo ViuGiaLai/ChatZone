@@ -70,29 +70,33 @@ export function Sidebar({ user }: SidebarProps) {
     } catch {}
   }, [])
 
-  const fetchUnreadCounts = useCallback(async () => {
+  const fetchData = useCallback(async () => {
     try {
-      const response = await fetch("/api/chats/unread")
-      if (response.ok) {
-        const data = await response.json()
-        setUnreadCounts(data)
-      }
-    } catch (error) {
-      console.error("Error fetching unread counts:", error)
-    }
-  }, [])
-
-  const fetchChats = useCallback(async () => {
-    try {
-      const response = await fetch("/api/chats")
-      if (response.ok) {
-        const data = await response.json()
-        setChats(data)
+      const [chatsRes, usersRes] = await Promise.all([
+        fetch("/api/chats"),
+        fetch("/api/users"),
+      ])
+      if (chatsRes.ok) {
+        const data = await chatsRes.json()
+        if (data.chats) {
+          setChats(data.chats)
+          setUnreadCounts(data.unreadCounts || {})
+        } else {
+          setChats(data)
+        }
       } else {
-        console.error("Failed to load chats:", await response.text())
+        console.error("Failed to load chats:", await chatsRes.text())
+      }
+      if (usersRes.ok) {
+        const usersData = await usersRes.json()
+        const map: Record<string, boolean> = {}
+        ;(Array.isArray(usersData) ? usersData : []).forEach((u: any) => {
+          if (u.is_online) map[u.id] = true
+        })
+        setOnlineUsers(map)
       }
     } catch (error) {
-      console.error("Error loading chats:", error)
+      console.error("Error loading data:", error)
     } finally {
       setIsLoading(false)
     }
@@ -117,16 +121,10 @@ export function Sidebar({ user }: SidebarProps) {
   }, [user.id])
 
   useEffect(() => {
-    fetchChats()
-    fetchUnreadCounts()
-    fetchOnlineStatus()
-    const interval = setInterval(() => {
-      fetchChats()
-      fetchUnreadCounts()
-      fetchOnlineStatus()
-    }, usePolling ? 3000 : 10000)
+    fetchData()
+    const interval = setInterval(() => fetchData(), usePolling ? 5000 : 15000)
     return () => clearInterval(interval)
-  }, [fetchChats, fetchUnreadCounts, fetchOnlineStatus, usePolling])
+  }, [fetchData, usePolling])
 
   useEffect(() => {
     const checkMobile = () => setIsMobile(window.innerWidth < 1024)
